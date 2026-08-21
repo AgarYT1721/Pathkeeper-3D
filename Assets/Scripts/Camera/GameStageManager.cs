@@ -125,6 +125,7 @@ public class GameStageManager : MonoBehaviour
 
         if (newStage == Stage.Edit2D)
         {
+            if (enemySpawner == null) enemySpawner = FindFirstObjectByType<EnemySpawner>();
             if (enemySpawner != null) enemySpawner.StopAndClearEnemies();
         }
 
@@ -159,7 +160,15 @@ public class GameStageManager : MonoBehaviour
 
         if (newStage == Stage.Action25D)
         {
-            if (enemySpawner != null) enemySpawner.StartSpawning();
+            if (WaveManager.Instance != null)
+            {
+                WaveManager.Instance.StartCurrentWave();
+            }
+            else
+            {
+                if (enemySpawner == null) enemySpawner = FindFirstObjectByType<EnemySpawner>();
+                if (enemySpawner != null) enemySpawner.StartSpawning();
+            }
         }
     }
 
@@ -201,51 +210,5 @@ public class GameStageManager : MonoBehaviour
         targetCamera.transform.position = pos;
         targetCamera.transform.rotation = rot;
         targetCamera.fieldOfView = fov;
-    }
-
-    private void OnGUI()
-    {
-        int buttonWidth = 250;
-        int buttonHeight = 45;
-        int padding = 20;
-
-        GUIStyle labelStyle = new GUIStyle(GUI.skin.box);
-        labelStyle.fontSize = 14;
-        labelStyle.fontStyle = FontStyle.Bold;
-        labelStyle.alignment = TextAnchor.MiddleCenter;
-
-        GUIStyle buttonStyle = new GUIStyle(GUI.skin.button);
-        buttonStyle.fontSize = 14;
-        buttonStyle.fontStyle = FontStyle.Bold;
-
-        // Mode Status Badge (Top-Left)
-        string statusText = currentStage == Stage.Edit2D 
-            ? "MODE: 2D EDIT STAGE (Click / Swap 3D Tiles)" 
-            : "MODE: 2.5D ARKNIGHTS ACTION (Wave Active)";
-        GUI.Box(new Rect(padding, padding, 360, 34), statusText, labelStyle);
-
-        // Action Button (Bottom-Right)
-        float btnX = Screen.width - buttonWidth - padding;
-        float btnY = Screen.height - buttonHeight - padding;
-
-        if (currentStage == Stage.Edit2D)
-        {
-            bool pathOk = gridManager != null && gridManager.isPathValid;
-            string btnText = pathOk ? "▶ START WAVE (SPACE)" : "⚠ INCOMPLETE PATH";
-
-            GUI.enabled = pathOk && !isTransitioning;
-            if (GUI.Button(new Rect(btnX, btnY, buttonWidth, buttonHeight), btnText, buttonStyle))
-            {
-                SetStage(Stage.Action25D);
-            }
-            GUI.enabled = true;
-        }
-        else
-        {
-            if (GUI.Button(new Rect(btnX, btnY, buttonWidth, buttonHeight), "↺ EDIT GRID (SPACE / R)", buttonStyle) && !isTransitioning)
-            {
-                SetStage(Stage.Edit2D);
-            }
-        }
     }
 }

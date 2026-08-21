@@ -2,7 +2,8 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// Master Grid and Path Engine in native 3D space with customizable tile spacing, procedural chevron arrows, and glowing Start/Goal beacons.
+/// Master Grid, Tile Cap, Shifting Checkpoint, and Path Engine in 3D space.
+/// Implements GDD Tile Caps, Immutable Obstacles, and mandatory Checkpoint Waypoints.
 /// </summary>
 public class GridManager : MonoBehaviour
 {
@@ -12,47 +13,61 @@ public class GridManager : MonoBehaviour
     public int height = 9;
     public float tileSpacing = 1.08f;
 
+    [Header("Tile Cap Rules (GDD Specification)")]
+    public int minPathLength = 6;
+    public int maxPathLength = 50;
+
     [Header("Level Balance")]
     [Range(0f, 1f)]
-    public float hazardChance = 0.18f;
-
-    [Header("Master Hazard Balancer")]
-    public TileProperty.HazardData spikeStats = new TileProperty.HazardData { damage = 10f, speedMult = 1f, dotDamage = 0f, duration = 0f };
-    public TileProperty.HazardData pitfallStats = new TileProperty.HazardData { damage = 999f, speedMult = 0f, dotDamage = 0f, duration = 0f };
-    public TileProperty.HazardData slowStats = new TileProperty.HazardData { damage = 0f, speedMult = 0.5f, dotDamage = 0f, duration = 0f };
-    public TileProperty.HazardData freezeStats = new TileProperty.HazardData { damage = 0f, speedMult = 0f, dotDamage = 0f, duration = 1.5f };
-    public TileProperty.HazardData burnStats = new TileProperty.HazardData { damage = 5f, speedMult = 1f, dotDamage = 4f, duration = 3f };
-    public TileProperty.HazardData poisonStats = new TileProperty.HazardData { damage = 0f, speedMult = 1f, dotDamage = 1f, duration = -1f };
-    public TileProperty.HazardData staticStats = new TileProperty.HazardData { damage = 2f, speedMult = 0.8f, dotDamage = 2f, duration = 2f };
-    public TileProperty.HazardData bleedStats = new TileProperty.HazardData { damage = 0f, speedMult = 1f, dotDamage = 3f, duration = 5f };
-    public TileProperty.HazardData curseStats = new TileProperty.HazardData { damage = 0f, speedMult = 1f, dotDamage = 0f, duration = 10f };
+    public float hazardChance = 0.20f;
+    public int immutableObstacleCount = 5;
 
     public TileBlock[,] allTiles;
-    public Vector2Int startCoords = new Vector2Int(0, 0);
-    public Vector2Int endCoords = new Vector2Int(12, 8);
+    public Vector2Int startCoords = new Vector2Int(0, 4);
+    public Vector2Int endCoords = new Vector2Int(12, 4);
+    public Vector2Int checkpointCoords;
 
     public List<Vector3> currentPathWorldPositions = new List<Vector3>();
+    public List<TileBlock> currentPathTiles = new List<TileBlock>();
     public bool isPathValid { get; private set; } = false;
+    public string pathValidationMessage { get; private set; } = "⚠ CONNECTING PATH...";
 
     private static Mesh cachedChevronMesh;
+    private GameObject checkpointBeacon;
 
     void Start()
     {
         allTiles = new TileBlock[width, height];
 
-        int randomStartY = Random.Range(0, height);
-        int randomEndY = Random.Range(0, height);
+        int randomStartY = Random.Range(1, height - 1);
+        int randomEndY = Random.Range(1, height - 1);
 
         startCoords = new Vector2Int(0, randomStartY);
         endCoords = new Vector2Int(width - 1, randomEndY);
 
         GenerateGrid();
+        ShiftCheckpoint();
         TracePath();
+
+        if (EconomyManager.Instance == null) { }
+        if (TrapShopManager.Instance == null) { }
 
         if (GameStageManager.Instance == null)
         {
             GameObject stageObj = new GameObject("GameStageManager");
             stageObj.AddComponent<GameStageManager>();
+        }
+
+        if (WaveManager.Instance == null)
+        {
+            GameObject waveObj = new GameObject("WaveManager");
+            waveObj.AddComponent<WaveManager>();
+        }
+
+        if (FindFirstObjectByType<InGameHUD>() == null)
+        {
+            GameObject hudObj = new GameObject("InGameHUD");
+            hudObj.AddComponent<InGameHUD>();
         }
     }
 
@@ -74,13 +89,12 @@ public class GridManager : MonoBehaviour
                 }
                 else
                 {
-                    // Clean procedural 3D block (matching Blender render)
+                    // Clean procedural 3D block
                     newTile = GameObject.CreatePrimitive(PrimitiveType.Cube);
                     newTile.name = $"Tile_{x}_{y}";
                     newTile.transform.position = spawnPos;
                     newTile.transform.localScale = new Vector3(1.0f, 0.35f, 1.0f);
 
-                    // Add clean default clay material
                     Renderer r = newTile.GetComponent<Renderer>();
                     if (r != null)
                     {
@@ -90,157 +104,177 @@ public class GridManager : MonoBehaviour
                         r.material = blockMat;
                     }
 
-                    // Add top-face Chevron Arrow indicator
+                    // Top-face Chevron Arrow indicator
                     GameObject arrowObj = new GameObject("Arrow");
                     arrowObj.transform.SetParent(newTile.transform, false);
-                    arrowObj.transform.localPosition = new Vector3(0f, 0.52f, 0f); // Top face
-                    arrowObj.transform.localScale = Vector3.one * 1.5f;
+                    arrowObj.transform.localPosition = new Vector3(0f, 0.51f, 0f);
 
-                    MeshFilter mf = arrowObj.AddComponent<MeshFilter>();
-                    mf.sharedMesh = GetOrCreateChevronMesh();
+                    MeshFilter arrowFilter = arrowObj.AddComponent<MeshFilter>();
+                    arrowFilter.sharedMesh = GetOrCreateChevronMesh();
 
-                    MeshRenderer arrowR = arrowObj.AddComponent<MeshRenderer>();
+                    MeshRenderer arrowRenderer = arrowObj.AddComponent<MeshRenderer>();
                     Material arrowMat = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
                     if (arrowMat.shader == null) arrowMat = new Material(Shader.Find("Unlit/Color"));
-                    arrowMat.color = new Color(0.15f, 0.18f, 0.25f, 1f);
-                    arrowR.material = arrowMat;
-
-                    newTile.AddComponent<TileBlock>();
-                    newTile.AddComponent<TileProperty>();
-                    newTile.AddComponent<TileTrigger>();
+                    arrowMat.color = new Color(0.12f, 0.14f, 0.18f, 0.95f);
+                    arrowRenderer.material = arrowMat;
                 }
 
-                TileBlock tileScript = newTile.GetComponent<TileBlock>();
-                if (tileScript == null) tileScript = newTile.AddComponent<TileBlock>();
+                TileBlock tileComp = newTile.GetComponent<TileBlock>();
+                if (tileComp == null) tileComp = newTile.AddComponent<TileBlock>();
 
-                tileScript.gridX = x;
-                tileScript.gridY = y;
-                allTiles[x, y] = tileScript;
+                TileProperty propComp = newTile.GetComponent<TileProperty>();
+                if (propComp == null) propComp = newTile.AddComponent<TileProperty>();
 
-                TileBlock.Direction finalDir;
+                TileTrigger trigComp = newTile.GetComponent<TileTrigger>();
+                if (trigComp == null) trigComp = newTile.AddComponent<TileTrigger>();
+
+                tileComp.gridX = x;
+                tileComp.gridY = y;
+                allTiles[x, y] = tileComp;
+
+                // Configure Start / End roles
                 if (x == startCoords.x && y == startCoords.y)
                 {
-                    finalDir = GetValidStartDirection(x, y);
+                    tileComp.isStartTile = true;
+                    tileComp.SetDirection(GetValidStartDirection(x, y));
+                    propComp.SetType(TileProperty.TileType.Normal);
                     CreateStartBeacon(newTile.transform);
                 }
                 else if (x == endCoords.x && y == endCoords.y)
                 {
-                    finalDir = (TileBlock.Direction)Random.Range(0, 4);
+                    tileComp.isEndTile = true;
+                    tileComp.SetDirection(TileBlock.Direction.Right);
+                    propComp.SetType(TileProperty.TileType.Normal);
                     CreateGoalBeacon(newTile.transform);
                 }
                 else
                 {
-                    finalDir = (TileBlock.Direction)Random.Range(0, 4);
-                }
+                    tileComp.SetDirection((TileBlock.Direction)Random.Range(0, 4));
 
-                tileScript.SetDirection(finalDir);
-
-                // Random hazard generation (excluding start & goal)
-                if (Random.value < hazardChance && !IsStartOrEnd(x, y))
-                {
-                    int randomHazard = Random.Range(1, System.Enum.GetValues(typeof(TileProperty.TileType)).Length);
-                    TileProperty tp = newTile.GetComponent<TileProperty>();
-                    if (tp != null)
+                    if (Random.value < hazardChance)
                     {
-                        tp.SetType((TileProperty.TileType)randomHazard);
-
-                        switch (tp.type)
-                        {
-                            case TileProperty.TileType.Spike: tp.currentData = spikeStats; break;
-                            case TileProperty.TileType.Slow: tp.currentData = slowStats; break;
-                            case TileProperty.TileType.Burn: tp.currentData = burnStats; break;
-                            case TileProperty.TileType.Freeze: tp.currentData = freezeStats; break;
-                            case TileProperty.TileType.Pitfall: tp.currentData = pitfallStats; break;
-                            case TileProperty.TileType.Poison: tp.currentData = poisonStats; break;
-                            case TileProperty.TileType.Static: tp.currentData = staticStats; break;
-                            case TileProperty.TileType.Bleed: tp.currentData = bleedStats; break;
-                            case TileProperty.TileType.Curse: tp.currentData = curseStats; break;
-                        }
+                        TileProperty.TileType randomHazard = (TileProperty.TileType)Random.Range(1, 10);
+                        propComp.SetType(randomHazard);
+                    }
+                    else
+                    {
+                        propComp.SetType(TileProperty.TileType.Normal);
                     }
                 }
             }
         }
+
+        // Generate Immutable Obstacle Blocks (GDD: fixed blocks that cannot be moved or rotated)
+        GenerateImmutableObstacles();
     }
 
-    private void CreateStartBeacon(Transform parent)
+    private void GenerateImmutableObstacles()
     {
-        // Glowing Green Start Marker
-        GameObject beacon = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-        beacon.name = "StartBeacon";
-        Destroy(beacon.GetComponent<Collider>());
-        beacon.transform.SetParent(parent, false);
-        beacon.transform.localPosition = new Vector3(0f, 0.7f, 0f);
-        beacon.transform.localScale = new Vector3(0.5f, 0.15f, 0.5f);
+        int placed = 0;
+        int attempts = 0;
 
-        Renderer r = beacon.GetComponent<Renderer>();
-        if (r != null)
+        while (placed < immutableObstacleCount && attempts < 100)
         {
-            Material mat = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
-            if (mat.shader == null) mat = new Material(Shader.Find("Unlit/Color"));
-            mat.color = new Color(0.1f, 0.95f, 0.35f, 1f); // Vibrant Emerald Green
-            r.material = mat;
+            attempts++;
+            int rx = Random.Range(2, width - 2);
+            int ry = Random.Range(0, height);
+
+            TileBlock t = allTiles[rx, ry];
+            if (t != null && !t.isStartTile && !t.isEndTile && !t.isImmutable)
+            {
+                t.isImmutable = true;
+                TileProperty tp = t.GetComponent<TileProperty>();
+                if (tp != null)
+                {
+                    tp.SetTileColor(new Color(0.22f, 0.24f, 0.28f)); // Dark iron bedrock
+                }
+
+                // Add immutable pillar decoration
+                GameObject pillar = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+                pillar.name = "ImmutablePillar";
+                Destroy(pillar.GetComponent<Collider>());
+                pillar.transform.SetParent(t.transform, false);
+                pillar.transform.localPosition = new Vector3(0f, 0.65f, 0f);
+                pillar.transform.localScale = new Vector3(0.4f, 0.35f, 0.4f);
+
+                Renderer r = pillar.GetComponent<Renderer>();
+                if (r != null)
+                {
+                    Material pMat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+                    if (pMat.shader == null) pMat = new Material(Shader.Find("Standard"));
+                    pMat.color = new Color(0.35f, 0.38f, 0.44f);
+                    r.material = pMat;
+                }
+
+                placed++;
+            }
+        }
+    }
+
+    public void ShiftCheckpoint()
+    {
+        // 1. Clear old checkpoint flag
+        if (allTiles != null && checkpointCoords.x >= 0 && checkpointCoords.x < width && checkpointCoords.y >= 0 && checkpointCoords.y < height)
+        {
+            TileBlock old = allTiles[checkpointCoords.x, checkpointCoords.y];
+            if (old != null) old.isCheckpoint = false;
         }
 
-        // Add slow rotation animation
-        beacon.AddComponent<ObjectRotator>();
-    }
-
-    private void CreateGoalBeacon(Transform parent)
-    {
-        // Glowing Red Goal Marker (Diamond / Cube)
-        GameObject beacon = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        beacon.name = "GoalBeacon";
-        Destroy(beacon.GetComponent<Collider>());
-        beacon.transform.SetParent(parent, false);
-        beacon.transform.localPosition = new Vector3(0f, 0.7f, 0f);
-        beacon.transform.localRotation = Quaternion.Euler(45f, 45f, 45f);
-        beacon.transform.localScale = new Vector3(0.4f, 0.4f, 0.4f);
-
-        Renderer r = beacon.GetComponent<Renderer>();
-        if (r != null)
+        // 2. Pick a new valid checkpoint coordinate
+        int attempts = 0;
+        while (attempts < 100)
         {
-            Material mat = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
-            if (mat.shader == null) mat = new Material(Shader.Find("Unlit/Color"));
-            mat.color = new Color(0.95f, 0.15f, 0.2f, 1f); // Vibrant Crimson Red
-            r.material = mat;
+            attempts++;
+            int cx = Random.Range(3, width - 3);
+            int cy = Random.Range(0, height);
+
+            TileBlock t = allTiles[cx, cy];
+            if (t != null && !t.isStartTile && !t.isEndTile && !t.isImmutable)
+            {
+                checkpointCoords = new Vector2Int(cx, cy);
+                t.isCheckpoint = true;
+                break;
+            }
         }
 
-        beacon.AddComponent<ObjectRotator>();
-    }
+        // 3. Spawn / Move the Checkpoint Beacon
+        if (checkpointBeacon != null) Destroy(checkpointBeacon);
 
-    public static Mesh GetOrCreateChevronMesh()
-    {
-        if (cachedChevronMesh != null) return cachedChevronMesh;
-
-        Mesh mesh = new Mesh();
-        mesh.name = "ProceduralChevron";
-
-        Vector3[] vertices = new Vector3[]
+        TileBlock cpTile = allTiles[checkpointCoords.x, checkpointCoords.y];
+        if (cpTile != null)
         {
-            new Vector3(0f, 0f, 0.28f),        // 0: Arrow Tip (+Z Forward)
-            new Vector3(-0.22f, 0f, -0.22f),    // 1: Left Wing
-            new Vector3(0f, 0f, -0.06f),       // 2: Center Notch
-            new Vector3(0.22f, 0f, -0.22f)     // 3: Right Wing
-        };
+            checkpointBeacon = new GameObject("CheckpointBeacon");
+            checkpointBeacon.transform.SetParent(cpTile.transform, false);
+            checkpointBeacon.transform.localPosition = new Vector3(0f, 0.65f, 0f);
 
-        int[] triangles = new int[]
-        {
-            0, 2, 1, // Left half
-            0, 3, 2  // Right half
-        };
+            // Glowing Waypoint Rune Crystal
+            GameObject crystal = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            crystal.name = "RuneCrystal";
+            Destroy(crystal.GetComponent<Collider>());
+            crystal.transform.SetParent(checkpointBeacon.transform, false);
+            crystal.transform.localPosition = Vector3.zero;
+            crystal.transform.localScale = new Vector3(0.45f, 0.15f, 0.45f);
 
-        Vector3[] normals = new Vector3[]
-        {
-            Vector3.up, Vector3.up, Vector3.up, Vector3.up
-        };
+            crystal.AddComponent<BeaconAnimator>();
 
-        mesh.vertices = vertices;
-        mesh.triangles = triangles;
-        mesh.normals = normals;
-        mesh.RecalculateBounds();
+            Renderer cr = crystal.GetComponent<Renderer>();
+            if (cr != null)
+            {
+                Material cMat = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+                if (cMat.shader == null) cMat = new Material(Shader.Find("Unlit/Color"));
+                cMat.color = new Color(0.15f, 0.90f, 1f, 0.95f); // Cyan Waypoint Rune
+                cr.material = cMat;
+            }
 
-        cachedChevronMesh = mesh;
-        return cachedChevronMesh;
+            // Light pulse
+            Light cpLight = checkpointBeacon.AddComponent<Light>();
+            cpLight.type = LightType.Point;
+            cpLight.color = new Color(0.2f, 0.85f, 1f);
+            cpLight.range = 3.5f;
+            cpLight.intensity = 1.8f;
+        }
+
+        TracePath();
     }
 
     public void TracePath()
@@ -249,6 +283,7 @@ public class GridManager : MonoBehaviour
         currentPathWorldPositions.Clear();
         Vector2Int currentPos = startCoords;
         bool goalReached = false;
+        bool checkpointVisited = false;
 
         for (int i = 0; i < (width * height); i++)
         {
@@ -265,9 +300,13 @@ public class GridManager : MonoBehaviour
 
             pathList.Add(currentTile);
 
-            Vector3 tileCenter = currentTile.transform.position;
-            tileCenter.y = 0.22f;
+            Vector3 tileCenter = GetGridWorldPosition(currentPos.x, currentPos.y);
             currentPathWorldPositions.Add(tileCenter);
+
+            if (currentPos == checkpointCoords)
+            {
+                checkpointVisited = true;
+            }
 
             if (currentPos == endCoords)
             {
@@ -278,7 +317,35 @@ public class GridManager : MonoBehaviour
             currentPos = GetNextCoords(currentPos, currentTile.currentDirection);
         }
 
-        isPathValid = goalReached;
+        currentPathTiles = new List<TileBlock>(pathList);
+
+        // Validate GDD Constraints
+        if (!goalReached)
+        {
+            isPathValid = false;
+            pathValidationMessage = "⚠ NO PATH TO GOAL";
+        }
+        else if (!checkpointVisited)
+        {
+            isPathValid = false;
+            pathValidationMessage = "⚠ MUST VISIT CHECKPOINT 📍";
+        }
+        else if (pathList.Count < minPathLength)
+        {
+            isPathValid = false;
+            pathValidationMessage = $"⚠ PATH TOO SHORT (MIN: {minPathLength})";
+        }
+        else if (pathList.Count > maxPathLength)
+        {
+            isPathValid = false;
+            pathValidationMessage = $"⚠ PATH TOO LONG (MAX: {maxPathLength})";
+        }
+        else
+        {
+            isPathValid = true;
+            pathValidationMessage = $"● PATH READY ({pathList.Count} TILES)";
+        }
+
         HighlightPath(pathList);
     }
 
@@ -304,22 +371,32 @@ public class GridManager : MonoBehaviour
                     TileProperty tp = tile.GetComponent<TileProperty>();
                     if (tp == null) continue;
 
-                    // 1. Start block ALWAYS stays Emerald Green
+                    // 1. Start Portal: Emerald Green
                     if (x == startCoords.x && y == startCoords.y)
                     {
                         tp.SetTileColor(new Color(0.15f, 0.85f, 0.35f));
                     }
-                    // 2. Goal block ALWAYS stays Crimson Red
+                    // 2. Goal Core: Crimson Red
                     else if (x == endCoords.x && y == endCoords.y)
                     {
                         tp.SetTileColor(new Color(0.95f, 0.2f, 0.25f));
                     }
-                    // 3. Blocks on the active path get a bright golden highlight
+                    // 3. Checkpoint Tile: Vibrant Cyan
+                    else if (x == checkpointCoords.x && y == checkpointCoords.y)
+                    {
+                        tp.SetTileColor(new Color(0.15f, 0.90f, 1.0f));
+                    }
+                    // 4. Immutable Obstacle: Dark Charcoal Bedrock
+                    else if (tile.isImmutable)
+                    {
+                        tp.SetTileColor(new Color(0.24f, 0.26f, 0.30f));
+                    }
+                    // 5. Active Path: Golden Yellow
                     else if (path != null && path.Contains(tile))
                     {
                         tp.SetTileColor(new Color(1f, 0.92f, 0.45f));
                     }
-                    // 4. Inactive blocks return to slate gray
+                    // 6. Inactive blocks: Slate Gray
                     else
                     {
                         tp.SetTileColor(new Color(0.82f, 0.84f, 0.88f));
@@ -356,44 +433,132 @@ public class GridManager : MonoBehaviour
         return validDirections[Random.Range(0, validDirections.Count)];
     }
 
-    bool IsStartOrEnd(int x, int y)
+    public Vector3 GetGridWorldPosition(int x, int y)
     {
-        return (x == startCoords.x && y == startCoords.y) || (x == endCoords.x && y == endCoords.y);
+        float xOffset = (width - 1) / 2f;
+        float zOffset = (height - 1) / 2f;
+        return new Vector3((x - xOffset) * tileSpacing, 0.22f, (y - zOffset) * tileSpacing);
     }
 
-    public void SwapTiles(TileBlock scriptA, TileBlock scriptB)
+    public void SwapTiles(TileBlock tileA, TileBlock tileB)
     {
-        if (scriptA == null || scriptB == null) return;
-        if (IsStartOrEnd(scriptA.gridX, scriptA.gridY) || IsStartOrEnd(scriptB.gridX, scriptB.gridY)) return;
+        if (tileA == null || tileB == null || tileA == tileB) return;
+        if (tileA.isImmutable || tileB.isImmutable) return;
+        if (tileA.isStartTile || tileB.isStartTile || tileA.isEndTile || tileB.isEndTile) return;
+        if (tileA.isCheckpoint || tileB.isCheckpoint) return;
 
-        TileProperty propA = scriptA.GetComponent<TileProperty>();
-        TileProperty propB = scriptB.GetComponent<TileProperty>();
+        int ax = tileA.gridX; int ay = tileA.gridY;
+        int bx = tileB.gridX; int by = tileB.gridY;
 
-        TileProperty.TileType typeA = propA.type;
-        TileProperty.HazardData dataA = propA.currentData;
-        TileBlock.Direction dirA = scriptA.currentDirection;
+        Vector3 posA = GetGridWorldPosition(ax, ay);
+        posA.y = 0f;
+        Vector3 posB = GetGridWorldPosition(bx, by);
+        posB.y = 0f;
 
-        propA.SetType(propB.type);
-        propA.currentData = propB.currentData;
-        scriptA.SetDirection(scriptB.currentDirection);
+        tileA.AnimateSwapTo(posB);
+        tileB.AnimateSwapTo(posA);
 
-        propB.SetType(typeA);
-        propB.currentData = dataA;
-        scriptB.SetDirection(dirA);
+        tileA.gridX = bx; tileA.gridY = by;
+        tileB.gridX = ax; tileB.gridY = ay;
+
+        allTiles[bx, by] = tileA;
+        allTiles[ax, ay] = tileB;
 
         TracePath();
     }
-}
 
-/// <summary>
-/// Simple helper to slowly rotate beacons / portals in 3D.
-/// </summary>
-public class ObjectRotator : MonoBehaviour
-{
-    public float rotationSpeed = 45f;
-
-    void Update()
+    void CreateStartBeacon(Transform parent)
     {
-        transform.Rotate(Vector3.up, rotationSpeed * Time.deltaTime, Space.World);
+        GameObject beacon = new GameObject("StartBeacon");
+        beacon.transform.SetParent(parent, false);
+        beacon.transform.localPosition = new Vector3(0f, 0.6f, 0f);
+
+        GameObject ring = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+        ring.name = "PortalRing";
+        Destroy(ring.GetComponent<Collider>());
+        ring.transform.SetParent(beacon.transform, false);
+        ring.transform.localPosition = Vector3.zero;
+        ring.transform.localScale = new Vector3(0.65f, 0.08f, 0.65f);
+        ring.AddComponent<BeaconAnimator>();
+
+        Renderer r = ring.GetComponent<Renderer>();
+        if (r != null)
+        {
+            Material mat = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+            if (mat.shader == null) mat = new Material(Shader.Find("Unlit/Color"));
+            mat.color = new Color(0.2f, 0.95f, 0.4f, 0.9f);
+            r.material = mat;
+        }
+
+        Light lt = beacon.AddComponent<Light>();
+        lt.type = LightType.Point;
+        lt.color = new Color(0.2f, 0.95f, 0.4f);
+        lt.range = 3.5f;
+        lt.intensity = 2.0f;
+    }
+
+    void CreateGoalBeacon(Transform parent)
+    {
+        GameObject beacon = new GameObject("GoalDiamond");
+        beacon.transform.SetParent(parent, false);
+        beacon.transform.localPosition = new Vector3(0f, 0.75f, 0f);
+
+        GameObject diamond = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        diamond.name = "CoreCrystal";
+        Destroy(diamond.GetComponent<Collider>());
+        diamond.transform.SetParent(beacon.transform, false);
+        diamond.transform.localPosition = Vector3.zero;
+        diamond.transform.localRotation = Quaternion.Euler(45f, 45f, 45f);
+        diamond.transform.localScale = Vector3.one * 0.45f;
+        diamond.AddComponent<BeaconAnimator>();
+
+        Renderer r = diamond.GetComponent<Renderer>();
+        if (r != null)
+        {
+            Material mat = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+            if (mat.shader == null) mat = new Material(Shader.Find("Unlit/Color"));
+            mat.color = new Color(1f, 0.15f, 0.25f, 0.95f);
+            r.material = mat;
+        }
+
+        Light lt = beacon.AddComponent<Light>();
+        lt.type = LightType.Point;
+        lt.color = new Color(1f, 0.15f, 0.25f);
+        lt.range = 3.5f;
+        lt.intensity = 2.0f;
+    }
+
+    private static Mesh GetOrCreateChevronMesh()
+    {
+        if (cachedChevronMesh != null) return cachedChevronMesh;
+
+        Mesh mesh = new Mesh();
+        mesh.name = "ChevronArrowMesh";
+
+        Vector3[] verts = new Vector3[]
+        {
+            new Vector3( 0.00f, 0f,  0.35f), // Tip top
+            new Vector3(-0.30f, 0f, -0.25f), // Left back
+            new Vector3(-0.15f, 0f, -0.32f), // Left bottom notch
+            new Vector3( 0.00f, 0f, -0.12f), // Center inner crook
+            new Vector3( 0.15f, 0f, -0.32f), // Right bottom notch
+            new Vector3( 0.30f, 0f, -0.25f), // Right back
+        };
+
+        int[] tris = new int[]
+        {
+            0, 5, 3,
+            5, 4, 3,
+            0, 3, 1,
+            1, 3, 2
+        };
+
+        mesh.vertices = verts;
+        mesh.triangles = tris;
+        mesh.RecalculateNormals();
+        mesh.RecalculateBounds();
+
+        cachedChevronMesh = mesh;
+        return cachedChevronMesh;
     }
 }

@@ -1,26 +1,10 @@
 using UnityEngine;
 
 /// <summary>
-/// Triggers hazard damage and status effects when units step onto this 3D tile.
+/// Helper component on tiles. Hazard triggering is precisely managed by EnemyPathFinding
+/// to prevent false-positive trigger brushes from adjacent diagonal/neighbor tiles.
 /// </summary>
 public class TileTrigger : MonoBehaviour
 {
-    private TileProperty tileProperty;
-
-    void Start()
-    {
-        tileProperty = GetComponent<TileProperty>();
-    }
-
-    private void OnTriggerEnter(Collider other)
-    {
-        Enemy enemy = other.GetComponent<Enemy>();
-        if (enemy == null) enemy = other.GetComponentInParent<Enemy>();
-
-        if (enemy != null && tileProperty != null)
-        {
-            enemy.ApplyTileHazard(tileProperty.currentData);
-            Debug.Log($"[Hazard Trigger] Enemy ({enemy.currentClass}) stepped on: {tileProperty.type}");
-        }
-    }
+    // Path-based step hazard detection in EnemyPathFinding handles exact tile stepping
 }

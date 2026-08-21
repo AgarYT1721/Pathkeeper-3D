@@ -97,4 +97,19 @@ public static class InputHelper
         return false;
 #endif
     }
+
+    public static bool GetFKeyDown()
+    {
+#if ENABLE_INPUT_SYSTEM
+        if (Keyboard.current != null && Keyboard.current.fKey.wasPressedThisFrame)
+        {
+            return true;
+        }
+#endif
+#if ENABLE_LEGACY_INPUT_MANAGER
+        return Input.GetKeyDown(KeyCode.F);
+#else
+        return false;
+#endif
+    }
 }

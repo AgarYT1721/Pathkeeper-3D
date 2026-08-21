@@ -2,13 +2,20 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 
 /// <summary>
-/// Simple UI menu controller for Start and Quit buttons.
+/// Title Screen Menu Controller for Canvas UI Play and Quit buttons.
 /// </summary>
 public class StartMenu : MonoBehaviour
 {
     public void PlayGame()
     {
-        SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex + 1);
+        if (SceneManager.sceneCountInBuildSettings > 1)
+        {
+            SceneManager.LoadScene(1);
+        }
+        else
+        {
+            SceneManager.LoadScene("SampleScene");
+        }
     }
 
     public void QuitGame()
